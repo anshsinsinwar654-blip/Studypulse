@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StudyPulse</title>
+<style>
+  :root {
+    --bg: #eef1f5; --surface: #ffffff; --ink: #172033; --muted: #5b6678;
+    --line: #d5dbe5; --accent: #0f766e; --accent-ink: #ffffff; --chip: #e1ece9;
+    --danger: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1623; --surface: #182235; --ink: #e7ecf4; --muted: #98a4b8;
+      --line: #2a3750; --accent: #2dd4bf; --accent-ink: #06201c; --chip: #1d3a3a;
+      --danger: #f97066;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; justify-content: center;
+  }
+  .app { width: 100%; max-width: 680px; height: 100%; display: flex; flex-direction: column; padding: 0 16px; }
+  header { padding: 20px 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 1.35rem; letter-spacing: -0.01em; }
+  .sub { margin: 2px 0 0; color: var(--muted); font-size: .9rem; }
+  .pulse { width: 120px; height: 28px; flex: none; color: var(--accent); }
+  .pulse path { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .pulse.busy path { stroke-dasharray: 60 140; animation: beat 1.1s linear infinite; }
+  @keyframes beat { to { stroke-dashoffset: -200; } }
+  @media (prefers-reduced-motion: reduce) { .pulse.busy path { animation: none; stroke-dasharray: none; } }
+
+  #log { flex: 1; overflow-y: auto; padding: 8px 0 16px; display: flex; flex-direction: column; gap: 10px; }
+  .empty { margin: auto 0; color: var(--muted); }
+  .empty p { margin: 0 0 8px; }
+  .empty button { display: block; margin: 6px 0; text-align: left; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.err { align-self: flex-start; color: var(--danger); border: 1px solid var(--danger); background: transparent; }
+  .tools { align-self: flex-start; display: flex; gap: 6px; flex-wrap: wrap; margin-top: -4px; }
+  .chip { font-size: .8rem; padding: 2px 10px; border-radius: 999px; background: var(--chip); color: var(--ink); }
+
+  form { display: flex; gap: 8px; padding: 10px 0 18px; border-top: 1px solid var(--line); }
+  input[type=text] {
+    flex: 1; min-width: 0; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink); font: inherit;
+  }
+  button { font: inherit; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 10px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button[aria-pressed=true] { background: var(--chip); border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: default; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .toggle { font-size: .85rem; padding: 6px 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>StudyPulse</h1>
+      <p class="sub">Your study coach. Add what you need to remember, then get quizzed just before you forget it.</p>
+    </div>
+    <svg id="pulse" class="pulse" viewBox="0 0 120 28" aria-hidden="true">
+      <path d="M0 14 H30 L38 4 L48 24 L56 14 H120"/>
+    </svg>
+  </header>
+
+  <div id="log" role="log" aria-live="polite" aria-label="Conversation">
+    <div class="empty" id="empty">
+      <p>Type or speak to start. Try one of these:</p>
+      <button type="button" data-say="Add a card in dbms: What does ACID stand for? Atomicity, Consistency, Isolation, Durability">Add a card about ACID</button>
+      <button type="button" data-say="Quiz me">Quiz me</button>
+      <button type="button" data-say="How did I do this week?">How did I do this week?</button>
+    </div>
+  </div>
+
+  <form id="form" autocomplete="off">
+    <button type="button" id="mic" class="toggle" aria-label="Speak" hidden>Speak</button>
+    <input type="text" id="input" aria-label="Message" placeholder="Say or type a message" maxlength="1000" required>
+    <button type="submit" id="send" class="primary">Send</button>
+    <button type="button" id="voice" class="toggle" aria-pressed="false" title="Read replies aloud">Read aloud</button>
+  </form>
+</div>
+
+<script>
+(function () {
+  const log = document.getElementById('log');
+  const empty = document.getElementById('empty');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const send = document.getElementById('send');
+  const pulse = document.getElementById('pulse');
+  const mic = document.getElementById('mic');
+  const voice = document.getElementById('voice');
+
+  let history = [];          // Bedrock Converse messages, kept in the browser
+  let busy = false;
+
+  function add(text, cls) {
+    if (empty) empty.remove();
+    const el = document.createElement('div');
+    el.className = 'msg ' + cls;
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function addTools(names) {
+    if (!names.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'tools';
+    names.forEach(function (n) {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = 'used ' + n;
+      wrap.appendChild(c);
+    });
+    log.appendChild(wrap);
+  }
+
+  function setBusy(on) {
+    busy = on;
+    send.disabled = on;
+    pulse.classList.toggle('busy', on);
+  }
+
+  async function say(text) {
+    text = text.trim();
+    if (!text || busy) return;
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    add(text, 'user');
+    input.value = '';
+    const before = history.length;
+    history.push({ role: 'user', content: [{ text: text }] });
+    setBusy(true);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      history = data.messages;
+      const used = [];
+      history.slice(before).forEach(function (m) {
+        (m.content || []).forEach(function (b) { if (b.toolUse) used.push(b.toolUse.name); });
+      });
+      addTools(used);
+      add(data.reply || '(no reply)', 'bot');
+      if (voice.getAttribute('aria-pressed') === 'true' && window.speechSynthesis && data.reply) {
+        speechSynthesis.speak(new SpeechSynthesisUtterance(data.reply));
+      }
+    } catch (err) {
+      history.length = before;   // drop the failed turn so the user can retry
+      add(err.message, 'err');
+    } finally {
+      setBusy(false);
+      input.focus();
+    }
+  }
+
+  form.addEventListener('submit', function (e) { e.preventDefault(); say(input.value); });
+  document.querySelectorAll('[data-say]').forEach(function (b) {
+    b.addEventListener('click', function () { say(b.dataset.say); });
+  });
+
+  voice.addEventListener('click', function () {
+    const on = voice.getAttribute('aria-pressed') !== 'true';
+    voice.setAttribute('aria-pressed', String(on));
+    if (!on && window.speechSynthesis) speechSynthesis.cancel();
+  });
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SR) {
+    mic.hidden = false;
+    const rec = new SR();
+    rec.lang = 'en-US';
+    rec.interimResults = false;
+    rec.onresult = function (e) { say(e.results[0][0].transcript); };
+    rec.onend = function () { mic.disabled = false; mic.textContent = 'Speak'; };
+    rec.onerror = function () { mic.disabled = false; mic.textContent = 'Speak'; };
+    mic.addEventListener('click', function () {
+      if (busy) return;
+      mic.disabled = true; mic.textContent = 'Listening';
+      try { rec.start(); } catch (_) { mic.disabled = false; mic.textContent = 'Speak'; }
+    });
+  }
+})();
+</script>
+</body>
+</html>
